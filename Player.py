@@ -77,6 +77,8 @@ class Player:
 
 
 
+
+
     def night_action(self):
         # 如果是狼人，获取agent选择结果，并投票
         pass
