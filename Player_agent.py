@@ -1,6 +1,8 @@
+import random
 from modelscope import snapshot_download, AutoTokenizer, AutoModelForCausalLM
 import torch
 from transformers import BitsAndBytesConfig
+import utility
 
 
 def load_agent_model():
@@ -156,3 +158,117 @@ class Player:
             length = len(response)
         self.response = response
         self.history = history
+
+
+def check_game_continue(players):
+    global ALIVE_WEREWOLF
+    global ALIVE_VILLAGER
+    alive_werewolf = 0
+    alive_villager = 0
+    for player in players:
+        if player.alive:
+            if player.role == "werewolf":
+                alive_werewolf += 1
+            elif player.role == "villager":
+                alive_villager += 1
+    ALIVE_VILLAGER = alive_villager
+    ALIVE_WEREWOLF = alive_werewolf
+    if ALIVE_WEREWOLF == 0:
+        print("游戏结束，平民获胜")
+        return 0
+    elif ALIVE_VILLAGER == 0:
+        print("游戏介绍，狼人获胜")
+        return 0
+    return 1
+
+
+def init_players(tokenizer, model):
+    werewolf_num, villagers_list = utility.random_character(4, 1)
+    # 创建玩家并排序
+    number_of_players = 4
+    players = ([Player('werewolf', werewolf_num, tokenizer, model)] +
+               [Player('villager', villager_num, tokenizer, model) for villager_num in villagers_list])
+    players.sort()
+    return players
+
+
+def werewolf_game_loop(players):
+    while True:
+        day_time = True
+        day_night_message = ""
+        number_of_players = len(players)
+        #  白天逻辑
+        if day_time:
+            #  更新投票和夜晚的信息，第二天才开始
+            if day_night_message:
+                for player in players:
+                    if player.alive:
+                        player.agent_update(day_night_message)
+
+            # 存活玩家各自发言环节
+            info_pool = []
+            for i, player in enumerate(players):
+                if not player.alive:
+                    continue
+                previous_info = utility.previous_statement_generation(info_pool)
+                response = player.agent_statement(previous_info)
+                info_pool.append(response)
+
+            # 投票环节
+            vote_result = {}
+            vote_result_message = ""
+            for player_number, player in enumerate(players, start=1):
+                if not player.alive:
+                    continue
+                post_info = utility.post_statement_generation(info_pool, player_number)
+                alive_info = utility.check_live(players)
+                temp_result, _temp_result = player.agent_vote(post_info, alive_info)
+
+                vote_result_message += f"{player_number}号投票给了{_temp_result}号玩家.\n"
+                if temp_result is not None:
+                    vote_result.update(temp_result)
+
+            # 结算投票,遍历vote_result里的value项,并得到结果，更新在Agent里。recipients_indices是得票最多player数，即平票最高有多少人
+            vote_recipients, recipients_indices = utility.find_highest_votes(vote_result, number_of_players)
+            finally_res = -1
+
+            if recipients_indices == 1:  # 只有一个最高得票
+                if vote_recipients[0] == 0:  # 得到最高票的是弃权票
+                    day_night_message = day_night_message + "弃权票获得最高票数，没有玩家被处死.\n"  # 需要从传递的信息添加
+                else:  # 最高票是某个player
+                    finally_res = players[vote_recipients[0]-1].number
+                    players[vote_recipients[0]-1].alive = False
+                    day_night_message = day_night_message + f"被投票处死的是{finally_res}号玩家.\n"
+            else:  # 多个的票平分最高
+                executed_player = vote_recipients[random.randint(0, recipients_indices-1)]
+                if(executed_player == 0):
+                    day_night_message = day_night_message + "随机到的并列最高票数结果为弃权票，没有玩家被处死.\n"
+                    print(day_night_message)
+                else:
+                    players[executed_player-1].alive = False
+                    finally_res = players[executed_player-1].number
+                    day_night_message = day_night_message + f"被投票处死的是{finally_res}号玩家.\n"
+                    print(day_night_message)
+            # 这里day_night_message把投票结保存，与狼人晚上的行动结果一起给到第二天的agents。
+
+            # 检查游戏是否继续
+            game_continue = check_game_continue(players)
+            if not game_continue:
+                break
+                # 画面另写
+            day_time = False  # 切换到夜晚
+        else:
+            # 夜晚逻辑：狼人行动
+            victim = -1
+            alive_info = utility.check_live(players)
+            for player in players:
+                if player.alive and player.role == 'werewolf':  # 找到狼人角色
+                    victim = player.agent_kill(day_night_message, alive_info)
+            for player in players:
+                if player.alive and player.number == victim:
+                    player.alive = False
+                    day_night_message += f"夜晚被狼人杀死的玩家是{player.number}号玩家。\n"
+            game_continue = check_game_continue(players)
+            if not game_continue:
+                break
+            day_time = True  # 切换到白天
